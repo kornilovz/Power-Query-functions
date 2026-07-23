@@ -1,0 +1,19 @@
+let
+    Источник = Excel.CurrentWorkbook(){[Name="TableRename"]}[Content],
+    #"Измененный тип" = Table.TransformColumnTypes(Источник,{{"SourceColumns", type text}, {"TargetColumns", type text}}),
+ 
+    Source = #"Измененный тип",
+    
+    // Группируем по TargetColumns, собирая SourceColumns в список
+    Grouped = Table.Group(
+        Source,
+        {"TargetColumns"},
+        {{"Sources", each [SourceColumns], type list}}
+    ),
+    
+    // Преобразуем таблицу в запись: колонка TargetColumns становится ключами, Sources — значениями
+    Record = Record.FromTable(
+        Table.RenameColumns(Grouped, {{"TargetColumns", "Name"}, {"Sources", "Value"}})
+    )
+in
+    Record
