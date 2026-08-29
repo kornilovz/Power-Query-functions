@@ -1,36 +1,54 @@
-// Докстринг: описание функции, её параметров и возвращаемого значения
 /*
-    Функция для интеллектуального поиска и извлечения таблицы с заголовками из "сырых" данных.
-    Она анализирует входную таблицу, ищет строку, которая с наибольшей вероятностью является заголовком,
-    и возвращает таблицу с правильными именами столбцов.
+    ФУНКЦИЯ: fnFindHeader
+    ЗАДАЧА: найти в "сырой" таблице строку с заголовками столбцов и вернуть
+            таблицу с правильными названиями столбцов.
 
-    Параметры:
-        table           - таблица (тип table), в которой нужно найти заголовки.
-        expectedColumns - список ожидаемых имён столбцов (list of text).
-        minMatches      (необязательный) - минимальное количество совпадений с expectedColumns,
-                           чтобы считать строку заголовком. По умолчанию = количество expectedColumns.
-        maxRows         (необязательный) - сколько первых строк таблицы анализировать при поиске.
-                           По умолчанию = 30.
-        normalizeHeaders (необязательный) - логический флаг: нужно ли нормализовать (приводить к общему виду)
-                           имена столбцов с помощью внешней функции fnNormalize.
-                           По умолчанию = true.
+    Зачем это нужно:
+    Часто выгрузки из других систем содержат "мусор" перед настоящей таблицей
+    (название отчёта, дату выгрузки, пустые строки и т.п.), и реальные заголовки
+    столбцов находятся не в первой строке, а где-то ниже. Эта функция сама
+    находит нужную строку и "поднимает" её в заголовки.
 
-    Возвращает:
-        Таблицу (table) с корректными заголовками.
+    ПАРАМЕТРЫ:
+        table            - исходная таблица, в которой нужно найти заголовки.
+        expectedColumns  - список названий столбцов, которые мы ожидаем увидеть
+                           (например: {"ID", "Дата", "Сумма"}).
+        minMatches       - (необязательно) сколько столбцов из expectedColumns
+                           должно совпасть, чтобы строка считалась заголовком.
+                           Если не указано — требуются ВСЕ столбцы из expectedColumns.
+        maxRows          - (необязательно) сколько первых строк таблицы просматривать
+                           в поисках заголовка. По умолчанию — 30.
+        normalizeHeaders - (необязательно) true/false — приводить ли найденные
+                           заголовки к единому виду через функцию fnNormalize
+                           (убирает лишние пробелы, регистр и т.п.).
+                           По умолчанию — true.
 
-    Примечания:
-        - Для нормализации строк используется внешняя функция fnNormalize (должна быть определена заранее).
-        - Для переименования столбцов после построения применяется внешняя функция fnRenameColumns.
-        - Если заголовки найдены в первых строках, они используются "как есть" или нормализуются.
-        - Если заголовки не найдены в текущих именах столбцов, функция сканирует первые maxRows строк
-          в поисках строки, удовлетворяющей условию совпадений.
-          
-    Изменения в версии 2.0:
-        - Оптимизирована логика нормализации параметров (вынесена дублирующаяся переменная needNorm)
-        - Устранены лишние преобразования Table.ToRows() (был дважды в headersOk ветке)
-        - Улучшена функция listContains с использованием ленивого вычисления (List.Generate)
-        - Добавлено буферизирование промежуточных списков для лучшей производительности
-        - Удален мертвый код и улучшена читаемость
+    РЕЗУЛЬТАТ:
+        Таблица с корректными названиями столбцов и данными, начинающимися
+        сразу после найденной строки заголовков.
+
+    ТРЕБОВАНИЯ:
+        В той же книге/проекте должна быть определена функция fnNormalize —
+        она используется для нормализации текста (названий столбцов и ячеек).
+
+    ЛОГИКА РАБОТЫ (упрощённо):
+        1. Проверяем, может быть, заголовки уже стоят на своём месте (текущие
+           названия столбцов таблицы совпадают с ожидаемыми) — если да, просто
+           переименовываем столбцы и возвращаем таблицу.
+        2. Если нет — просматриваем первые maxRows строк таблицы и ищем строку,
+           где встречается достаточное количество ожидаемых названий.
+        3. Найденную строку делаем заголовком, а всё, что было до и включая neё,
+           отбрасываем — остаётся только таблица с данными.
+
+    ВЕРСИЯ: 3.1 — оптимизированная (ускоренная) версия.
+    Что изменено по сравнению с предыдущей версией:
+        - Функция больше не разбирает всю таблицу на строки и не собирает её
+          заново — переименование столбцов происходит "на месте"
+          (Table.RenameColumns). Это значительно быстрее на больших таблицах
+          и, если данные приходят из базы данных, позволяет части работы
+          выполниться на стороне источника, а не в Power Query.
+        - Добавлена защита от повторяющихся названий столбцов после
+          нормализации (см. функцию dedupNames ниже).
 */
 let
     Источник = (
@@ -41,119 +59,119 @@ let
         optional normalizeHeaders as logical
     ) =>
         let
-            // Вспомогательная функция для нормализации строк (внешняя)
+            // Функция нормализации текста — определена отдельно в проекте
             normalize = fnNormalize,
-            // Вспомогательная функция для построения таблицы из строки заголовков и строк данных
-            buildTable = (headerRow as list, dataRows as list) as table =>
+
+            // -----------------------------------------------------------
+            // Блок 1. Вспомогательные функции
+            // -----------------------------------------------------------
+
+            // Если после нормализации несколько столбцов получили одинаковое
+            // название (например, "Итог" и "итог "), делаем их уникальными:
+            // второе повторение получит имя "Итог_1", третье — "Итог_2" и т.д.
+            // Это нужно, потому что Power Query не разрешает таблице иметь
+            // два столбца с одинаковым именем.
+            dedupNames = (names as list) as list =>
+                List.Accumulate(
+                    names,
+                    [alreadyUsed = {}, uniqueNames = {}],
+                    (state, currentName) =>
+                        let
+                            howManyTimesSeen = List.Count(List.Select(state[alreadyUsed], each _ = currentName)),
+                            uniqueName = if howManyTimesSeen = 0 then currentName else currentName & "_" & Text.From(howManyTimesSeen)
+                        in
+                            [
+                                alreadyUsed = state[alreadyUsed] & {currentName},
+                                uniqueNames = state[uniqueNames] & {uniqueName}
+                            ]
+                )[uniqueNames],
+
+            // Проверяет, есть ли искомое слово (pattern) хотя бы в одной ячейке строки
+            rowContainsPattern = (rowValues as list, pattern as text) as logical =>
+                List.AnyTrue(List.Transform(rowValues, each Text.Contains(_, pattern))),
+
+            // Проверяет, содержит ли строка достаточное количество ожидаемых столбцов
+            isHeaderRow = (rowValues as list, patternsList as list, requiredCount as number) as logical =>
                 let
-                    // Объединяем заголовок и данные в один список строк
-                    newRows = {headerRow} & dataRows,
-                    // Создаём временную таблицу из списка списков
-                    tempTable = Table.FromRows(newRows),
-                    // Продвигаем первую строку в заголовки (PromoteAllScalars = true преобразует все значения к скалярам)
-                    promoted = Table.PromoteHeaders(tempTable, [PromoteAllScalars = true])
+                    normalizedRow = List.Buffer(List.Transform(rowValues, each if _ = null then "" else normalize(_))),
+                    foundCount = List.Count(List.Select(patternsList, each rowContainsPattern(normalizedRow, _)))
                 in
-                    promoted,
-            // ✅ ОПТИМИЗАЦИЯ: Ленивое вычисление с ранним выходом при первом совпадении
-            // Проверяет, содержит ли хотя бы один элемент списка lst подстроку pat
-            listContains = (lst as list, pat as text) as logical =>
-                let
-                    count = List.Count(lst),
-                    gen = List.Generate(
-                        () => [i = 0, found = false],
-                        each [i] < count,
-                        // условие всегда true для всех допустимых индексов
-                        each
-                            let
-                                current_found = Text.Contains(lst{[i]}, pat),
-                                // Если уже нашли на предыдущем шаге — переходим на позицию count, чтобы завершить цикл
-                                next_i = if [found] then count else (if current_found then [i] else [i] + 1),
-                                next_found = [found] or current_found
-                            in
-                                [i = next_i, found = next_found],
-                        each [found]
-                    )
-                in
-                    List.AnyTrue(gen),
-            // Проверяет, удовлетворяет ли строка row условию: содержит минимум required совпадений с patterns
-            rowMatches = (row as list, patterns as list, required as number) as logical =>
-                let
-                    // Нормализуем все элементы строки (заменяем null на пустую строку)
-                    // ✅ ОПТИМИЗАЦИЯ: буферизируем для лучшей производительности при множественном доступе
-                    rowNorm = List.Buffer(List.Transform(row, each if _ = null then "" else normalize(_))),
-                    // Для каждого шаблона проверяем, содержится ли он в любой ячейке строки
-                    matches = List.Transform(patterns, (pat) => listContains(rowNorm, pat)),
-                    // Считаем количество истинных совпадений
-                    count = List.Count(List.Select(matches, each _ = true))
-                in
-                    count >= required,
-            // ✅ ОПТИМИЗАЦИЯ: Вынесли нормализацию параметров один раз (раньше дублировалась)
-            // Определяем минимальное количество совпадений, необходимое для признания строки заголовком
-            required = if minMatches = null then List.Count(expectedColumns) else minMatches,
-            // Ограничение на количество анализируемых строк при поиске
-            limit = if maxRows = null then 30 else maxRows,
-            // Флаг нормализации заголовков (используется в обеих ветках)
-            needNorm = if normalizeHeaders = null then true else normalizeHeaders,
-            // Буферизируем нормализованные шаблоны для повышения производительности
-            patterns = List.Buffer(List.Transform(expectedColumns, each normalize(_))),
-            // Заменяем все ошибки в таблице на null, чтобы избежать сбоев при преобразованиях
-            cleaned = Table.ReplaceErrorValues(table, List.Transform(Table.ColumnNames(table), each {_, null})),
-            // Получаем текущие имена столбцов
-            currentCols = Table.ColumnNames(cleaned),
-            // Нормализуем текущие имена столбцов
-            normCurrent = List.Transform(currentCols, each normalize(_)),
-            // Считаем, сколько шаблонов содержится в текущих именах столбцов
-            colMatches = List.Count(List.Select(patterns, (pat) => listContains(normCurrent, pat))),
-            // Проверяем, достаточно ли совпадений среди текущих заголовков
-            headersOk = colMatches >= required,
-            // Основной результат
-            result =
-                if headersOk then
-                    // Если текущие заголовки подходят, используем их
+                    foundCount >= requiredCount,
+
+            // -----------------------------------------------------------
+            // Блок 2. Подготовка параметров и данных
+            // -----------------------------------------------------------
+
+            // Сколько совпадений считаем достаточным (по умолчанию — все ожидаемые столбцы)
+            requiredMatches = if minMatches = null then List.Count(expectedColumns) else minMatches,
+
+            // Сколько строк просматривать в поиске заголовка (по умолчанию 30)
+            rowsToScan = if maxRows = null then 30 else maxRows,
+
+            // Нужно ли нормализовать итоговые названия столбцов (по умолчанию — да)
+            shouldNormalize = if normalizeHeaders = null then true else normalizeHeaders,
+
+            // Ожидаемые названия столбцов, приведённые к единому виду для сравнения
+            expectedPatterns = List.Buffer(List.Transform(expectedColumns, each normalize(_))),
+
+            // Убираем возможные ошибки в ячейках таблицы, заменяя их на пустое значение,
+            // чтобы дальнейшая обработка не прерывалась из-за некорректных данных
+            cleanTable = Table.ReplaceErrorValues(table, List.Transform(Table.ColumnNames(table), each {_, null})),
+
+            currentColumnNames = Table.ColumnNames(cleanTable),
+            normalizedCurrentNames = List.Transform(currentColumnNames, each normalize(_)),
+
+            // -----------------------------------------------------------
+            // Блок 3. Проверка — может быть, заголовки уже на месте?
+            // -----------------------------------------------------------
+            matchesInCurrentNames = List.Count(List.Select(expectedPatterns, each rowContainsPattern(normalizedCurrentNames, _))),
+            headersAlreadyCorrect = matchesInCurrentNames >= requiredMatches,
+
+            // -----------------------------------------------------------
+            // Блок 4. Итоговый результат
+            // -----------------------------------------------------------
+            finalResult =
+                if headersAlreadyCorrect then
+                    // Случай А: текущие названия столбцов уже подходят —
+                    // просто переименовываем их (без изменения самих данных)
                     let
-                        // Старые имена столбцов (предположительно уже корректные)
-                        oldHeaderRow = Table.ColumnNames(cleaned),
-                        // Итоговая строка заголовков (либо нормализованная, либо исходная)
-                        finalHeaderRow =
-                            if needNorm then
-                                List.Transform(oldHeaderRow, each normalize(_))
-                            else
-                                oldHeaderRow,
-                        // ✅ ОПТИМИЗАЦИЯ: Одно преобразование Table.ToRows вместо двух
-                        allRows = Table.ToRows(cleaned)
-                    in
-                        buildTable(finalHeaderRow, allRows)
-                else
-                    // Если текущие заголовки не подходят, ищем строку-заголовок среди первых limit строк
-                    let
-                        // Берём первые limit строк для анализа
-                        smallTable = Table.FirstN(cleaned, limit),
-                        // Преобразуем их в список списков и буферизируем
-                        rowsToCheck = List.Buffer(Table.ToRows(smallTable)),
-                        // Индексы строк
-                        indices = List.Positions(rowsToCheck),
-                        // Находим первый индекс, где строка удовлетворяет условиям
-                        headerIndex = List.First(
-                            List.Select(indices, each rowMatches(rowsToCheck{_}, patterns, required)), null
+                        newColumnNames = dedupNames(
+                            if shouldNormalize then List.Transform(currentColumnNames, each normalize(_)) else currentColumnNames
                         ),
-                        // Если индекс не найден, генерируем ошибку
-                        rawHeaderRow =
-                            if headerIndex = null then
-                                error "Заголовки не найдены"
-                            else
-                                // Берём строку-заголовок из исходной таблицы (не из smallTable, чтобы не потерять данные)
-                                Table.ToRows(Table.Skip(cleaned, headerIndex)){0},
-                        // Нормализуем заголовки (приводим к тексту, заменяем null)
-                        finalHeaderRow =
-                            if needNorm then
-                                List.Transform(rawHeaderRow, each normalize(_))
-                            else
-                                List.Transform(rawHeaderRow, each if _ = null then "" else Text.From(_)),
-                        // Данные начинаются со следующей строки после найденного заголовка
-                        dataRows = Table.ToRows(Table.Skip(cleaned, headerIndex + 1))
+                        renamedTable = Table.RenameColumns(cleanTable, List.Zip({currentColumnNames, newColumnNames}), MissingField.Ignore)
                     in
-                        buildTable(finalHeaderRow, dataRows)
+                        renamedTable
+                else
+                    // Случай Б: нужно найти строку-заголовок среди первых rowsToScan строк
+                    let
+                        rowsSample = List.Buffer(Table.ToRows(Table.FirstN(cleanTable, rowsToScan))),
+                        rowIndexes = List.Positions(rowsSample),
+
+                        // Индекс первой строки, которая похожа на заголовок
+                        headerRowIndex = List.First(
+                            List.Select(rowIndexes, each isHeaderRow(rowsSample{_}, expectedPatterns, requiredMatches)),
+                            null
+                        ),
+
+                        headerRowValues =
+                            if headerRowIndex = null then
+                                error "Не удалось найти строку с заголовками. Проверьте expectedColumns или увеличьте maxRows."
+                            else
+                                rowsSample{headerRowIndex},
+
+                        newColumnNames = dedupNames(
+                            if shouldNormalize then
+                                List.Transform(headerRowValues, each normalize(_))
+                            else
+                                List.Transform(headerRowValues, each if _ = null then "" else Text.From(_))
+                        ),
+
+                        // Данные — это всё, что идёт после найденной строки заголовка
+                        dataOnly = Table.Skip(cleanTable, headerRowIndex + 1),
+                        renamedTable = Table.RenameColumns(dataOnly, List.Zip({currentColumnNames, newColumnNames}), MissingField.Ignore)
+                    in
+                        renamedTable
         in
-            result
+            finalResult
 in
     Источник
