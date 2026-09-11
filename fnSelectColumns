@@ -1,0 +1,16 @@
+(Data as table) =>
+    let
+        target = "ОБЩЕЕ КОЛИЧЕСТВО ПО РД",
+        allCols = Table.ColumnNames(Data),
+        pos = List.PositionOf(allCols, target),
+        // Предполагаем, что колонка есть и за ней есть ещё 7 (всего 8)
+        extraCols = List.Range(allCols, pos, 8),
+        // Переименовываем: первая остаётся target, остальные в Доп_1..Доп_7
+        renameList = List.Transform({0..7}, each {extraCols{_}, if _ = 0 then target else "Доп_" & Text.From(_)}),
+        renamed = Table.RenameColumns(Data, renameList),
+        // Все нужные колонки: RequiredColumns (включает target) + Доп_1..Доп_7
+        result = Table.SelectColumns(
+            renamed, Record.FieldNames(TableRename) & List.Transform({1..7}, each "Доп_" & Text.From(_)), MissingField.UseNull)
+        
+    in
+        result
