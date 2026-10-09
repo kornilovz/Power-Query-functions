@@ -74,21 +74,38 @@ let
             // второе повторение получит имя "Итог_1", третье — "Итог_2" и т.д.
             // Это нужно, потому что Power Query не разрешает таблице иметь
             // два столбца с одинаковым именем.
-            dedupNames = (names as list) as list =>
-                List.Accumulate(
-                    names,
-                    [alreadyUsed = {}, uniqueNames = {}],
-                    (state, currentName) =>
-                        let
-                            howManyTimesSeen = List.Count(List.Select(state[alreadyUsed], each _ = currentName)),
-                            uniqueName = if howManyTimesSeen = 0 then currentName else currentName & "_" & Text.From(howManyTimesSeen)
-                        in
-                            [
-                                alreadyUsed = state[alreadyUsed] & {currentName},
-                                uniqueNames = state[uniqueNames] & {uniqueName}
-                            ]
-                )[uniqueNames],
 
+            dedupNames = (names as list) as list =>
+                if List.IsEmpty(names) then
+                    {}
+                else
+                    let
+                        headerValues =
+                            List.Transform(
+                                names,
+                                each
+                                    if _ = null then
+                                        null
+                                    else
+                                        let
+                                            name = Text.From(_)
+                                        in
+                                            if name = "" then null else name
+                            ),
+
+                        headerTable =
+                            Table.FromRows({headerValues}),
+
+                        promoted =
+                            Table.PromoteHeaders(
+                                headerTable,
+                                [PromoteAllScalars = true]
+                            ),
+
+                        uniqueNames =
+                            Table.ColumnNames(promoted)
+                    in
+                        uniqueNames,
             // Проверяет, есть ли искомое слово (pattern) хотя бы в одной ячейке строки
             rowContainsPattern = (rowValues as list, pattern as text) as logical =>
                 List.AnyTrue(List.Transform(rowValues, each Text.Contains(_, pattern))),
